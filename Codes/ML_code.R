@@ -12,7 +12,7 @@ library(tidyverse)
 #################################################################################################
 #Sample input data 
 #load the sample data
-setwd("D:/PHD data/Github projects/sample_code_and_data")
+setwd("D:/PHD data/Github projects/ML_models/sample_data")
 sample <- read.csv("sample.csv")
 sample2 <- sample[,c(1,2:8)] #load the response and predictor variables
 x <- as.matrix(sample2[,c(2:8)]) # convert the dataframe to a matrix
@@ -84,7 +84,7 @@ caret::MAE(observed, predicted)
 
 ##################################################################################################
 # use the below code to develop the final map using the predictor variable rasters
-
+#rasters not uploaded due to storage limitations
 setwd("D:/PHD data/Github projects/ML_models/example_predictors")
 
 img<-list.files(pattern='*.tif$')#load the tiff files
@@ -186,6 +186,7 @@ MAPE(predicted, observed)
 #MAE
 caret::MAE(observed, predicted)
 ######################################################################
+#rasters not uploaded due to storage limitations
 #apply the developed model on the stack to predict the final raster layer
 setwd("D:/PHD data/Github projects/Output")
 pred <- raster::predict(
@@ -296,66 +297,69 @@ writeRaster(pred_y_clamped, "predictedcover_Cubist_map_clamped.tif",
             format="GTiff", overwrite=TRUE)
 #################################################################################
 #XGBoost model 
-set.seed(123)
+#changing format of input
 
-# predictors
-xvars <- c("NDMI","Dist_roads","Elevation","SnowDepth","MAT","MAP","MAPcv")
+x_train <- as.matrix(data.frame(lapply(train[, 2:8], as.numeric)))
+storage.mode(x_train) <- "double"
+y_train <- as.numeric(train$y)
 
-# training data
-dat <- train %>%
-  dplyr::select(all_of(c("y", xvars))) %>%
-  na.omit()
+x_test <- as.matrix(data.frame(lapply(test[, 2:8], as.numeric)))
+storage.mode(x_test) <- "double"
+y_test <- as.numeric(test$y)
+######################################################
 
-ctrl <- trainControl(
-  method = "repeatedcv",
+xgbGrid <- expand.grid(nrounds = c(100,200,500,1000), # this is n_estimators in the python code above 
+                       max_depth = c(10, 15, 20, 25), 
+                       colsample_bytree = seq(0.5, 0.9, length.out = 5), 
+                       ## The values below are default values 
+                       eta = 0.1, 
+                       gamma=0, 
+                       min_child_weight = c(1,25), 
+                       subsample = c(0.25,1))
+
+##################################################
+
+xgb_trcontrol <- trainControl(
+  method = "cv",
   number = 2,
-  repeats = 1,
-  verboseIter = TRUE,
-  allowParallel = TRUE
+  allowParallel = TRUE,
+  verboseIter = FALSE
 )
-
-# Hyperparameter grid 
-grid <- expand.grid(
-  nrounds = c(300, 600, 1000),
-  max_depth = c(3, 5, 7),
-  eta = c(0.03, 0.05, 0.1),
-  gamma = c(0, 1),
-  colsample_bytree = c(0.6, 0.8, 1.0),
-  min_child_weight = c(1, 5),
-  subsample = c(0.6, 0.8, 1.0)
-)
-
-xgb_cv <- caret::train(
-  x = dat[, xvars],
-  y = dat$y,
+##################################################
+set.seed(123)
+xgb_model <- train(
+  x = x_train,
+  y = y_train,
+  trControl = xgb_trcontrol,
+  tuneGrid = xgbGrid,
   method = "xgbTree",
-  trControl = ctrl,
-  tuneGrid = grid,
   metric = "RMSE"
 )
+########################################################################################
+xgb_model$bestTune
+xgb_model$results$Rsquared
+xgb_model$results$RMSE
+xgb_model$results$MAE
+########################################################################################
+predicted_xgb = predict(xgb_model, X_test)
+residuals = y_test - predicted_xgb
+RMSE = sqrt(mean(residuals^2))
 
-xgb_cv
-best_params <- xgb_cv$bestTune
-best_params
+predicted_xgb = predict(xgb_model, X_test)
+#RMSE
+sqrt(mean((predicted_xgb - observed)^2))
+#correlation coefficient
+(cor(predicted_xgb,observed))^2 
+#Correlation
+cor(predicted_xgb,observed)
+#MAPE
+MAPE(predicted_xgb, y_test)
+#MAE
+mae(y_test,predicted_xgb)
+caret::MAE(y_test, predicted_xgb) 
 
-############################################################################
+########################################################################################
+setwd("D:/PHD data/Github projects/Output")
+xgb_reg <- predict(stack,xgb_model,filename="predictedcover_xgb_map.tif",na.rm=TRUE, progress="text",format="GTiff", overwrite=TRUE)  
 
-pred_fun_xgb <- function(model, data) {
-  # model is the *caret* object we pass to raster::predict
-  as.numeric(predict(model, newdata = data))
-}
-
-pred_y <- raster::predict(
-  stack,
-  xgb_cv,                     # pass caret object (not just finalModel)
-  fun       = pred_fun_xgb,
-  na.rm     = TRUE,
-  progress  = "text",
-  filename  = "predictedcover_XGBoost_map.tif",
-  format    = "GTiff",
-  overwrite = TRUE
-)
-
-pred_y_clamped <- raster::clamp(pred_y, lower = 0, upper = 100, useValues = TRUE)
-writeRaster(pred_y_clamped, "predictedcover_XGBoost_map_clamped.tif",
-            format="GTiff", overwrite=TRUE)
+########################################################################################
